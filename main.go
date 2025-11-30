@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -11,106 +11,109 @@ import (
 	"sync"
 	"syscall"
 	"unsafe"
+
+	"quiz-cli/quiz"
+	"quiz-cli/webapp"
 )
 
-var allQuestions []question
-
-type question struct {
-	Domain  int               `json:"domain"`
-	Prompt  string            `json:"question"`
-	Options map[string]string `json:"options"`
-	Answer  string            `json:"answer"`
-}
-
-type result struct {
-	userAnswer rune
-	correct    bool
-}
+var allQuestions []quiz.Question
 
 var (
 	activeRawState *syscall.Termios
 	activeRawFD    int
-	progressCount  int
-	resultsGlobal  []result
-	progressMu     sync.Mutex
+	activeSession  *quiz.Session
+	sessionMu      sync.Mutex
+)
+
+const (
+	colorReset  = "\033[0m"
+	colorGreen  = "\033[32m"
+	colorRed    = "\033[31m"
+	colorCyan   = "\033[36m"
+	colorYellow = "\033[33m"
+	colorBold   = "\033[1m"
+
+	checkMark = "✅"
+	crossMark = "❌"
+)
+
+type (
+	question = quiz.Question
+	result   = quiz.Result
 )
 
 func main() {
-	setupSignalHandling()
+	mode := flag.String("mode", "cli", "cli or web")
+	addr := flag.String("addr", ":8080", "listen address for web mode")
+	flag.Parse()
 
-	questions, err := loadQuestions()
+	questions, err := quiz.LoadQuestions("questions.json")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load questions: %v\n", err)
 		os.Exit(1)
 	}
 
-	reader := bufio.NewScanner(os.Stdin)
 	allQuestions = questions
 
-	fmt.Println("CSSLP Review Quiz (Domains 4-8)")
+	if strings.EqualFold(*mode, "web") {
+		if err := webapp.Run(*addr, questions); err != nil {
+			fmt.Fprintf(os.Stderr, "web server error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	runCLI(questions)
+}
+
+func runCLI(questions []quiz.Question) {
+	session := quiz.NewSession(questions)
+	sessionMu.Lock()
+	activeSession = session
+	sessionMu.Unlock()
+	setupSignalHandling()
+
+	reader := bufio.NewScanner(os.Stdin)
+
+	fmt.Println(colorize("CSSLP Review Quiz (Domains 4-8)", colorBold+colorCyan))
 	fmt.Println("-------------------------------")
 	fmt.Println("Answer each question with A, B, C, or D. Press Enter after each choice.")
 
-	results := make([]result, len(questions))
-	progressMu.Lock()
-	resultsGlobal = results
-	progressMu.Unlock()
-
-	for i := 0; i < len(questions); {
-		q := questions[i]
-		userChoice, ok, jump := promptWithArrows(reader, q, i+1)
+	for {
+		idx, q, ok := session.Current()
+		if !ok {
+			break
+		}
+		completed, total := session.Progress()
+		userChoice, inputOK, jump := promptWithArrows(reader, q, idx+1, completed, total)
 		if jump >= 0 {
-			i = jump
+			session.BringToFront(jump)
 			continue
 		}
-		if !ok {
+		if !inputOK {
 			fmt.Println("\nInput ended unexpectedly. Exiting quiz.")
 			return
 		}
-		progressMu.Lock()
-		results[i] = result{
-			userAnswer: userChoice,
-			correct:    isCorrect(userChoice, q),
-		}
-		progressCount = i + 1
-		progressMu.Unlock()
+
+		res, finished, _ := session.Answer(string(userChoice))
+
 		// brief feedback before continuing
-		showFeedback(q, results[i])
+		showFeedback(q, res)
 		fmt.Println("Press Enter to continue...")
 		reader.Scan()
 		fmt.Println()
-		i++
-	}
-
-	score := 0
-	for _, res := range results {
-		if res.correct {
-			score++
+		if finished {
+			break
 		}
 	}
 
-	printSummary(len(results), questions, results)
-}
-
-func isCorrect(choice rune, q question) bool {
-	return strings.EqualFold(string(choice), q.Answer)
-}
-
-func loadQuestions() ([]question, error) {
-	data, err := os.ReadFile("questions.json")
-	if err != nil {
-		return nil, err
-	}
-	var qs []question
-	if err := json.Unmarshal(data, &qs); err != nil {
-		return nil, err
-	}
-	return qs, nil
+	_, answered := session.Score()
+	printSummary(answered, questions, session.Results())
 }
 
 // promptWithArrows renders a selectable list with arrow key navigation.
 // Returns selected answer, ok, and jumpIndex (>=0 when a search jump is requested).
-func promptWithArrows(reader *bufio.Scanner, q question, number int) (rune, bool, int) {
+func promptWithArrows(reader *bufio.Scanner, q question, number int, completed, total int) (rune, bool, int) {
 	letters := sortedKeys(q.Options)
 	if len(letters) == 0 {
 		return 0, false, -1
@@ -120,7 +123,19 @@ func promptWithArrows(reader *bufio.Scanner, q question, number int) (rune, bool
 	render := func() {
 		width, rows := termSize()
 		clearScreen()
-		linesCount := len(letters) + 4 // title + blank + options + blank + instruction
+		progressLine := formatProgress(completed, total)
+		header := colorize(fmt.Sprintf("Q%d (Domain %d): %s", number, q.Domain, q.Prompt), colorBold+colorCyan)
+		lines := []string{progressLine, header, ""}
+		for i, letter := range letters {
+			prefix := "  "
+			if i == choiceIdx {
+				prefix = colorize("> ", colorYellow)
+			}
+			line := fmt.Sprintf("%s%c) %s", prefix, letter, q.Options[string(letter)])
+			lines = append(lines, line)
+		}
+		lines = append(lines, "", colorize("Use ↑/↓ to select, Enter to confirm (A–D also works).", colorYellow))
+		linesCount := len(lines)
 		topPad := 0
 		if rows > 0 {
 			if pad := (rows - linesCount) / 2; pad > 0 {
@@ -130,16 +145,6 @@ func promptWithArrows(reader *bufio.Scanner, q question, number int) (rune, bool
 		for i := 0; i < topPad; i++ {
 			fmt.Println()
 		}
-		lines := []string{fmt.Sprintf("Q%d (Domain %d): %s", number, q.Domain, q.Prompt), ""}
-		for i, letter := range letters {
-			prefix := "  "
-			if i == choiceIdx {
-				prefix = "> "
-			}
-			line := fmt.Sprintf("%s%c) %s", prefix, letter, q.Options[string(letter)])
-			lines = append(lines, line)
-		}
-		lines = append(lines, "", "Use ↑/↓ to select, Enter to confirm (A–D also works).")
 		renderBlock(lines, width)
 	}
 
@@ -240,6 +245,31 @@ func sortedKeys(opts map[string]string) []rune {
 	return letters
 }
 
+func formatProgress(completed, total int) string {
+	if total <= 0 {
+		return ""
+	}
+	if completed < 0 {
+		completed = 0
+	}
+	if completed > total {
+		completed = total
+	}
+	barWidth := 20
+	filled := 0
+	if total > 0 {
+		filled = completed * barWidth / total
+	}
+	filledPart := colorize(strings.Repeat("#", filled), colorGreen+colorBold)
+	emptyPart := strings.Repeat("-", barWidth-filled)
+	bar := "[" + filledPart + emptyPart + "]"
+	left := total - completed
+	if left < 0 {
+		left = 0
+	}
+	return fmt.Sprintf("%s %s%d/%d answered%s, %d left", bar, colorGreen, completed, total, colorReset, left)
+}
+
 // makeRaw sets the terminal into raw mode; returns previous state.
 func makeRaw(fd int) (*syscall.Termios, error) {
 	var oldState syscall.Termios
@@ -265,6 +295,13 @@ func unicodeToLetter(ch rune) rune {
 		return ch
 	}
 	return ch
+}
+
+func colorize(s, color string) string {
+	if color == "" {
+		return s
+	}
+	return color + s + colorReset
 }
 
 // searchQuestions returns (index, true) when found, or (-1, false) otherwise.
@@ -314,19 +351,28 @@ func showFeedback(q question, res result) {
 		"",
 		"",
 	}
-	if res.correct {
-		lines = append(lines, "Correct!")
+	userLetter := '-'
+	if res.UserAnswer != "" {
+		userLetter = rune(res.UserAnswer[0])
+	}
+	if res.Correct {
+		lines = append(lines, colorize(checkMark+" Correct!", colorGreen+colorBold))
 	} else {
-		lines = append(lines, "Incorrect.")
+		lines = append(lines, colorize(crossMark+" Incorrect.", colorRed+colorBold))
 	}
 	lines = append(lines,
-		fmt.Sprintf("Your answer: %c", res.userAnswer),
-		fmt.Sprintf("Correct answer: %s", q.Answer),
+		colorize(fmt.Sprintf("Your answer: %c", userLetter), colorYellow),
+		colorize(fmt.Sprintf("Correct answer: %s", q.Answer), colorGreen),
 		"",
-		fmt.Sprintf("Q (Domain %d): %s", q.Domain, q.Prompt),
+		colorize(fmt.Sprintf("Q (Domain %d): %s", q.Domain, q.Prompt), colorCyan+colorBold),
 	)
 	for _, letter := range sortedKeys(q.Options) {
-		lines = append(lines, fmt.Sprintf("  %c) %s", letter, q.Options[string(letter)]))
+		option := q.Options[string(letter)]
+		line := fmt.Sprintf("  %c) %s", letter, option)
+		if letter == unicodeToLetter(userLetter) {
+			line = colorize(line, colorYellow)
+		}
+		lines = append(lines, line)
 	}
 	renderBlockWithVerticalCenter(lines, width, rows)
 }
@@ -341,7 +387,7 @@ func printSummary(answered int, questions []question, results []result) {
 
 	score := 0
 	for i := 0; i < answered; i++ {
-		if results[i].correct {
+		if results[i].Correct {
 			score++
 		}
 	}
@@ -352,12 +398,15 @@ func printSummary(answered int, questions []question, results []result) {
 	maxLen := 0
 	for i := 0; i < answered; i++ {
 		q := questions[i]
-		user := results[i].userAnswer
-		status := "incorrect"
-		if results[i].correct {
-			status = "correct"
+		user := "-"
+		if results[i].UserAnswer != "" {
+			user = results[i].UserAnswer
 		}
-		line := fmt.Sprintf("Q%-3d %-9s Your:%c Correct:%s", i+1, status, user, q.Answer)
+		status := colorize(crossMark+" incorrect", colorRed+colorBold)
+		if results[i].Correct {
+			status = colorize(checkMark+" correct", colorGreen+colorBold)
+		}
+		line := fmt.Sprintf("Q%-3d %-9s Your:%s Correct:%s", i+1, status, user, q.Answer)
 		rows[i] = line
 		if l := len([]rune(line)); l > maxLen {
 			maxLen = l
@@ -407,18 +456,23 @@ func setupSignalHandling() {
 		if activeRawState != nil {
 			restore(activeRawFD, activeRawState)
 		}
-		progressMu.Lock()
-		answered := progressCount
-		resCopy := append([]result(nil), resultsGlobal...)
-		progressMu.Unlock()
+		sessionMu.Lock()
+		session := activeSession
+		sessionMu.Unlock()
 
+		if session == nil {
+			fmt.Println("\nNo answers recorded. Exiting.")
+			os.Exit(1)
+		}
+
+		_, answered := session.Score()
 		if answered == 0 {
 			fmt.Println("\nNo answers recorded. Exiting.")
 			os.Exit(1)
 		}
 
 		fmt.Println()
-		printSummary(answered, allQuestions, resCopy)
+		printSummary(answered, allQuestions, session.Results())
 		os.Exit(0)
 	}()
 }
