@@ -347,6 +347,9 @@ func printSummary(answered int, questions []question, results []result) {
 	}
 
 	fmt.Println("\nReview:")
+
+	rows := make([]string, answered)
+	maxLen := 0
 	for i := 0; i < answered; i++ {
 		q := questions[i]
 		user := results[i].userAnswer
@@ -354,11 +357,46 @@ func printSummary(answered int, questions []question, results []result) {
 		if results[i].correct {
 			status = "correct"
 		}
-		fmt.Printf("Q%d: %s\n", i+1, status)
-		fmt.Printf("  Your answer: %c\n", user)
-		fmt.Printf("  Correct answer: %s\n\n", q.Answer)
+		line := fmt.Sprintf("Q%-3d %-9s Your:%c Correct:%s", i+1, status, user, q.Answer)
+		rows[i] = line
+		if l := len([]rune(line)); l > maxLen {
+			maxLen = l
+		}
+	}
+
+	width, _ := termSize()
+	colWidth := maxLen + 2
+	cols := 1
+	if width > 0 && colWidth > 0 {
+		if c := width / colWidth; c > 0 {
+			cols = c
+		}
+	}
+	if cols < 1 {
+		cols = 1
+	}
+	rowsPerCol := (answered + cols - 1) / cols
+
+	for r := 0; r < rowsPerCol; r++ {
+		var parts []string
+		for c := 0; c < cols; c++ {
+			idx := c*rowsPerCol + r
+			if idx >= answered {
+				continue
+			}
+			parts = append(parts, padRight(rows[idx], colWidth))
+		}
+		fmt.Println(strings.TrimRight(strings.Join(parts, ""), " "))
 	}
 	fmt.Printf("You answered %d of %d correctly (%.1f%%).\n", score, answered, float64(score)*100/float64(answered))
+}
+
+func padRight(s string, width int) string {
+	runes := []rune(s)
+	if len(runes) >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-len(runes))
 }
 
 func setupSignalHandling() {
