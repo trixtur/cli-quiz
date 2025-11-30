@@ -6,6 +6,7 @@ Command-line quiz runner for multiple-choice question sets stored in JSON.
 - From this folder: `go run .`
 - Or build a binary: `go build ./...` then run `./quiz-cli`
 - Controls: use `↑/↓` then Enter to select, or type `A–D` and Enter. Press `/` to search, `Ctrl+C` to quit early (a partial grade is shown).
+- Web UI: `go run . -mode web -addr :8080` then open `http://localhost:8080`. Click **Try Again** to reset the session.
 
 ## Question File Format
 Create a `questions.json` beside the executable. It must be a JSON array of objects with these fields:

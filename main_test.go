@@ -42,9 +42,9 @@ func TestPrintSummaryPlacesGradeLast(t *testing.T) {
 		{Domain: 1, Prompt: "Q3", Answer: "C", Options: map[string]string{"C": "Maybe", "D": "No"}},
 	}
 	results := []result{
-		{userAnswer: 'A', correct: true},
-		{userAnswer: 'A', correct: false},
-		{userAnswer: 'C', correct: true},
+		{UserAnswer: "A", Correct: true},
+		{UserAnswer: "A", Correct: false},
+		{UserAnswer: "C", Correct: true},
 	}
 
 	output := captureOutput(t, func() {
