@@ -523,6 +523,8 @@ const indexHTML = `<!doctype html>
       border-radius: 16px;
       padding: 20px;
       box-shadow: var(--shadow);
+      max-height: 80vh;
+      overflow: auto;
     }
     .modal-actions {
       display: flex;
@@ -577,7 +579,7 @@ const indexHTML = `<!doctype html>
     <div class="modal-content">
       <div class="question" id="partialTitle">Partial Grade</div>
       <div id="partialScoreLine" class="muted"></div>
-      <div class="summary" id="partialRows"></div>
+      <div class="summary scrollable" id="partialRows"></div>
       <div class="modal-actions">
         <button class="cta ghost" id="cancelPartial">Keep going</button>
         <button class="cta" id="readyBtn">Ready!</button>
@@ -614,8 +616,17 @@ const indexHTML = `<!doctype html>
       renderQuestion(data.question);
     }
 
-    function renderRows(rows, target) {
+    function renderRows(rows, target, emptyText = "") {
       target.innerHTML = "";
+      if (!rows || rows.length === 0) {
+        if (emptyText) {
+          const div = document.createElement("div");
+          div.className = "summary-row";
+          div.innerText = emptyText;
+          target.appendChild(div);
+        }
+        return;
+      }
       rows.forEach(row => {
         const div = document.createElement("div");
         const emoji = row.correct ? "✅" : "❌";
@@ -773,8 +784,7 @@ const indexHTML = `<!doctype html>
           ? "No answers yet. Ready to start over?"
           : "Partial score: " + data.score + "/" + data.answered + " (" + pct + "%) so far.";
         const attemptedRows = (data.rows || []).filter(r => r.userAnswer);
-        const rowsToRender = attemptedRows.length ? attemptedRows : data.rows;
-        renderRows(rowsToRender, partialRows);
+        renderRows(attemptedRows, partialRows, attemptedRows.length ? "" : "No answers recorded yet.");
         partialModal.classList.remove("hidden");
       } catch (e) {
         setSearchStatus("Could not load partial grade.", "bad");
