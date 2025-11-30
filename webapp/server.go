@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +30,7 @@ func Run(addr string, questions []quiz.Question) error {
 	mux.HandleFunc("/api/answer", s.handleAnswer)
 	mux.HandleFunc("/api/summary", s.handleSummary)
 	mux.HandleFunc("/api/reset", s.handleReset)
+	mux.HandleFunc("/api/jump", s.handleJump)
 	server := &http.Server{
 		Addr:         addr,
 		Handler:      mux,
@@ -83,6 +86,17 @@ type summaryRow struct {
 	Correct       bool   `json:"correct"`
 	UserAnswer    string `json:"userAnswer"`
 	CorrectAnswer string `json:"correctAnswer"`
+}
+
+type jumpRequest struct {
+	Term string `json:"term"`
+}
+
+type jumpResponse struct {
+	Found  bool   `json:"found"`
+	Index  int    `json:"index,omitempty"`
+	Domain int    `json:"domain,omitempty"`
+	Prompt string `json:"prompt,omitempty"`
 }
 
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
@@ -173,6 +187,43 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "reset"})
 }
 
+func (s *Server) handleJump(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req jumpRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	term := strings.TrimSpace(req.Term)
+	if term == "" {
+		writeJSON(w, jumpResponse{Found: false})
+		return
+	}
+	s.mu.Lock()
+	session := s.session
+	s.mu.Unlock()
+	if session.Completed() {
+		writeJSON(w, jumpResponse{Found: false})
+		return
+	}
+	idx := s.findQuestionIndex(term)
+	if idx < 0 {
+		writeJSON(w, jumpResponse{Found: false})
+		return
+	}
+	session.BringToFront(idx)
+	q := s.questions[idx]
+	writeJSON(w, jumpResponse{
+		Found:  true,
+		Index:  idx + 1,
+		Domain: q.Domain,
+		Prompt: q.Prompt,
+	})
+}
+
 func (s *Server) buildSummary() summaryPayload {
 	s.mu.Lock()
 	session := s.session
@@ -200,6 +251,22 @@ func (s *Server) buildSummary() summaryPayload {
 		Percent:  percent,
 		Rows:     rows,
 	}
+}
+
+func (s *Server) findQuestionIndex(term string) int {
+	if n, err := strconv.Atoi(term); err == nil {
+		n-- // convert to 0-based
+		if n >= 0 && n < len(s.questions) {
+			return n
+		}
+	}
+	needle := strings.ToLower(term)
+	for i, q := range s.questions {
+		if strings.Contains(strings.ToLower(q.Prompt), needle) {
+			return i
+		}
+	}
+	return -1
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -295,6 +362,27 @@ const indexHTML = `<!doctype html>
       font-size: 14px;
       margin-bottom: 18px;
     }
+    .search {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .search input {
+      flex: 1;
+      min-width: 180px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 10px 12px;
+      outline: none;
+    }
+    .search input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(34,211,238,0.18);
+    }
     .card {
       background: var(--panel-strong);
       border: 1px solid rgba(255,255,255,0.06);
@@ -323,12 +411,25 @@ const indexHTML = `<!doctype html>
       gap: 10px;
       align-items: center;
       cursor: pointer;
-      transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+      transition: transform 120ms ease, border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
     }
     .option:hover {
       transform: translateY(-2px);
       border-color: rgba(34,211,238,0.5);
       background: rgba(34,211,238,0.08);
+    }
+    .option.selected {
+      border-color: var(--accent);
+      box-shadow: 0 8px 24px rgba(34,211,238,0.25);
+      background: rgba(34,211,238,0.1);
+    }
+    .option.correct {
+      border-color: rgba(52,211,153,0.8);
+      background: rgba(52,211,153,0.12);
+    }
+    .option.incorrect {
+      border-color: rgba(244,63,94,0.8);
+      background: rgba(244,63,94,0.12);
     }
     .option input { display: none; }
     .letter {
@@ -359,6 +460,12 @@ const indexHTML = `<!doctype html>
       cursor: pointer;
       box-shadow: 0 12px 30px rgba(34,211,238,0.35);
       transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+    .cta.ghost {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid rgba(34,211,238,0.5);
+      box-shadow: none;
     }
     .cta:hover {
       transform: translateY(-1px);
@@ -393,6 +500,8 @@ const indexHTML = `<!doctype html>
       .shell { padding: 20px; }
       header { flex-direction: column; align-items: flex-start; }
       .question { font-size: 20px; }
+      .search { flex-direction: column; align-items: stretch; }
+      .search .pill { width: 100%; text-align: center; }
     }
   </style>
 </head>
@@ -406,6 +515,11 @@ const indexHTML = `<!doctype html>
     <div class="progress-text">
       <div id="progressLabel">0% complete</div>
       <div id="progressCounts">0 / 0</div>
+    </div>
+    <div class="search">
+      <input id="searchTerm" type="search" placeholder="Search question text or number..." aria-label="Search question" />
+      <button class="cta ghost" id="searchBtn">Search & Jump</button>
+      <div id="searchFeedback" class="pill muted">Search to jump to a question.</div>
     </div>
     <div class="card" id="card">
       <div class="question" id="prompt">Loading question...</div>
@@ -425,6 +539,10 @@ const indexHTML = `<!doctype html>
   <script>
     let selected = "";
     let lock = false;
+    let optionNodes = {};
+    const FEEDBACK_PAUSE = 1400;
+    const searchInput = document.getElementById("searchTerm");
+    const searchFeedback = document.getElementById("searchFeedback");
 
     function optionTemplate(letter, text) {
       return '<label class="option">' +
@@ -445,12 +563,20 @@ const indexHTML = `<!doctype html>
       renderQuestion(data.question);
     }
 
+    function setSearchStatus(text, tone = "muted") {
+      searchFeedback.innerText = text;
+      const toneClass = tone === "good" ? "pill good" : tone === "bad" ? "pill bad" : "pill muted";
+      searchFeedback.className = toneClass;
+    }
+
     function renderQuestion(q) {
       selected = "";
       lock = false;
+      optionNodes = {};
       document.getElementById("feedback").className = "pill muted";
       document.getElementById("feedback").innerText = "Choose an option.";
-      document.getElementById("prompt").innerText = "Domain " + q.domain + " · " + q.prompt;
+      const qNumber = (q.index ?? 0) + 1;
+      document.getElementById("prompt").innerText = "Q" + qNumber + " · Domain " + q.domain + " · " + q.prompt;
       const opts = document.getElementById("options");
       opts.innerHTML = "";
       const letters = Object.keys(q.options).sort();
@@ -458,11 +584,25 @@ const indexHTML = `<!doctype html>
         const node = document.createElement("div");
         node.innerHTML = optionTemplate(letter, q.options[letter]);
         const label = node.firstElementChild;
-        label.addEventListener("click", () => { selected = letter; });
+        label.dataset.letter = letter;
+        label.addEventListener("click", () => selectOption(letter));
+        optionNodes[letter] = label;
         opts.appendChild(label);
       });
       document.getElementById("actionBtn").innerText = "Submit";
       document.getElementById("actionBtn").onclick = submitAnswer;
+      setSearchStatus("Search text or a number, then jump.", "muted");
+    }
+
+    function selectOption(letter) {
+      if (lock) return;
+      selected = letter;
+      Object.values(optionNodes).forEach(node => {
+        node.classList.toggle("selected", node.dataset.letter === letter);
+      });
+      const pill = document.getElementById("feedback");
+      pill.className = "pill muted";
+      pill.innerText = "Ready to submit " + letter + ".";
     }
 
     function updateProgress(p) {
@@ -470,6 +610,35 @@ const indexHTML = `<!doctype html>
       document.getElementById("progressBar").style.width = pct + "%";
       document.getElementById("progressLabel").innerText = pct + "% complete";
       document.getElementById("progressCounts").innerText = p.completed + " of " + p.total + " correct · " + p.attempted + " attempted";
+    }
+
+    async function searchAndJump() {
+      if (lock) return;
+      const term = searchInput.value.trim();
+      if (!term) {
+        setSearchStatus("Enter text or a question number to jump.", "bad");
+        return;
+      }
+      setSearchStatus("Searching...", "muted");
+      try {
+        const res = await fetch("/api/jump", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ term })
+        });
+        const data = await res.json();
+        if (!data.found) {
+          setSearchStatus("No question matched that search.", "bad");
+          return;
+        }
+        setSearchStatus("Jumped to Q" + data.index + " (Domain " + data.domain + ")", "good");
+        selected = "";
+        lock = false;
+        loadState();
+        searchInput.blur();
+      } catch (err) {
+        setSearchStatus("Search failed. Please try again.", "bad");
+      }
     }
 
     async function submitAnswer() {
@@ -490,16 +659,22 @@ const indexHTML = `<!doctype html>
       updateProgress(data.progress);
       const pill = document.getElementById("feedback");
       if (data.result.correct) {
-        pill.innerText = "✅ Correct!";
+        pill.innerText = "✅ Correct! Moving to the next question shortly.";
         pill.className = "pill good";
       } else {
-        pill.innerText = "❌ Incorrect. Correct answer: " + data.correctAnswer;
+        pill.innerText = "❌ Incorrect. Correct answer: " + data.correctAnswer + ". Take a moment - next question incoming.";
         pill.className = "pill bad";
       }
+      Object.entries(optionNodes).forEach(([letter, node]) => {
+        node.classList.remove("correct", "incorrect", "selected");
+        if (letter === data.correctAnswer) node.classList.add("correct");
+        if (letter === selected && !data.result.correct) node.classList.add("incorrect");
+        if (letter === selected && data.result.correct) node.classList.add("correct");
+      });
       if (data.finished) {
-        setTimeout(() => loadState(), 350);
+        setTimeout(() => loadState(), FEEDBACK_PAUSE);
       } else {
-        setTimeout(() => { lock = false; loadState(); }, 350);
+        setTimeout(() => { lock = false; loadState(); }, FEEDBACK_PAUSE);
       }
     }
 
@@ -530,6 +705,14 @@ const indexHTML = `<!doctype html>
         loadState();
       });
     }
+
+    document.getElementById("searchBtn").addEventListener("click", searchAndJump);
+    searchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        searchAndJump();
+      }
+    });
 
     loadState();
   </script>

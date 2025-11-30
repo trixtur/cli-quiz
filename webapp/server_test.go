@@ -91,6 +91,39 @@ func TestServerFlowStateAnswerReset(t *testing.T) {
 	}
 }
 
+func TestJumpSearchMovesQuestionToFront(t *testing.T) {
+	qs := []quiz.Question{
+		{Domain: 1, Prompt: "Sky color?", Options: map[string]string{"A": "Blue", "B": "Red"}, Answer: "A"},
+		{Domain: 2, Prompt: "Grass color?", Options: map[string]string{"A": "Blue", "B": "Green"}, Answer: "B"},
+	}
+	s := &Server{
+		session:   quiz.NewSession(qs),
+		questions: qs,
+	}
+
+	body := bytes.NewBufferString(`{"term":"grass"}`)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/jump", body)
+	s.handleJump(rr, req)
+
+	var resp jumpResponse
+	decodeBody(t, rr.Body.Bytes(), &resp)
+	if !resp.Found {
+		t.Fatalf("expected to find a match")
+	}
+	if resp.Index != 2 || resp.Domain != 2 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+
+	idx, _, ok := s.session.Current()
+	if !ok {
+		t.Fatalf("session should still have questions")
+	}
+	if idx != 1 {
+		t.Fatalf("expected question 2 to be brought to front, got idx %d", idx)
+	}
+}
+
 func decodeBody(t *testing.T, data []byte, v any) {
 	t.Helper()
 	if err := json.Unmarshal(data, v); err != nil {
