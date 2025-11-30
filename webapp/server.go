@@ -326,6 +326,11 @@ const indexHTML = `<!doctype html>
       gap: 16px;
       margin-bottom: 20px;
     }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
     .title {
       font-size: 28px;
       font-weight: 700;
@@ -467,6 +472,9 @@ const indexHTML = `<!doctype html>
       border: 1px solid rgba(34,211,238,0.5);
       box-shadow: none;
     }
+    .cta.small {
+      padding: 8px 12px;
+    }
     .cta:hover {
       transform: translateY(-1px);
       box-shadow: 0 16px 38px rgba(34,211,238,0.5);
@@ -496,6 +504,31 @@ const indexHTML = `<!doctype html>
       border: 1px solid rgba(255,255,255,0.06);
       font-size: 14px;
     }
+    .modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(6,9,19,0.65);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+    }
+    .modal.hidden { display: none; }
+    .modal-content {
+      width: min(620px, 96%);
+      background: var(--panel);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: var(--shadow);
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 14px;
+    }
     @media (max-width: 640px) {
       .shell { padding: 20px; }
       header { flex-direction: column; align-items: flex-start; }
@@ -509,7 +542,10 @@ const indexHTML = `<!doctype html>
   <div class="shell">
     <header>
       <div class="title">CSSLP Review Quiz</div>
-      <div class="badge" id="statusBadge">CLI heritage · now on the web</div>
+      <div class="header-actions">
+        <div class="badge" id="statusBadge">CLI heritage · now on the web</div>
+        <button class="cta ghost small" id="resetBtn" aria-label="Reset quiz">Try Again</button>
+      </div>
     </header>
     <div class="progress"><span id="progressBar"></span></div>
     <div class="progress-text">
@@ -533,7 +569,18 @@ const indexHTML = `<!doctype html>
       <div class="question">Quiz Complete</div>
       <div id="scoreLine" class="muted"></div>
       <div class="summary" id="summaryRows"></div>
-      <button class="cta" onclick="resetPage()">Try Again</button>
+      <button class="cta" id="summaryResetBtn">Try Again</button>
+    </div>
+  </div>
+  <div class="modal hidden" id="partialModal" role="dialog" aria-modal="true" aria-labelledby="partialTitle">
+    <div class="modal-content">
+      <div class="question" id="partialTitle">Partial Grade</div>
+      <div id="partialScoreLine" class="muted"></div>
+      <div class="summary" id="partialRows"></div>
+      <div class="modal-actions">
+        <button class="cta ghost" id="cancelPartial">Keep going</button>
+        <button class="cta" id="readyBtn">Ready!</button>
+      </div>
     </div>
   </div>
   <script>
@@ -543,6 +590,9 @@ const indexHTML = `<!doctype html>
     const FEEDBACK_PAUSE = 1400;
     const searchInput = document.getElementById("searchTerm");
     const searchFeedback = document.getElementById("searchFeedback");
+    const partialModal = document.getElementById("partialModal");
+    const partialRows = document.getElementById("partialRows");
+    const partialScoreLine = document.getElementById("partialScoreLine");
 
     function optionTemplate(letter, text) {
       return '<label class="option">' +
@@ -561,6 +611,18 @@ const indexHTML = `<!doctype html>
         return;
       }
       renderQuestion(data.question);
+    }
+
+    function renderRows(rows, target) {
+      target.innerHTML = "";
+      rows.forEach(row => {
+        const div = document.createElement("div");
+        const emoji = row.correct ? "✅" : "❌";
+        const tone = row.correct ? "good" : "bad";
+        div.className = "summary-row";
+        div.innerHTML = '<span>' + emoji + ' Q' + row.index + '</span><span class="' + (tone === "good" ? "good" : "bad") + '">You: ' + (row.userAnswer || "–") + ' · Correct: ' + row.correctAnswer + '</span>';
+        target.appendChild(div);
+      });
     }
 
     function setSearchStatus(text, tone = "muted") {
@@ -684,16 +746,7 @@ const indexHTML = `<!doctype html>
       summaryBox.style.display = "block";
       const pct = summary.answered === 0 ? 0 : (summary.score / summary.answered * 100).toFixed(1);
       document.getElementById("scoreLine").innerText = "First-attempt score: " + summary.score + "/" + summary.answered + " (" + pct + "%)";
-      const rows = document.getElementById("summaryRows");
-      rows.innerHTML = "";
-      summary.rows.forEach(row => {
-        const div = document.createElement("div");
-        const emoji = row.correct ? "✅" : "❌";
-        const tone = row.correct ? "good" : "bad";
-        div.className = "summary-row";
-        div.innerHTML = '<span>' + emoji + ' Q' + row.index + '</span><span class="' + (tone === "good" ? "good" : "bad") + '">You: ' + (row.userAnswer || "–") + ' · Correct: ' + row.correctAnswer + '</span>';
-        rows.appendChild(div);
-      });
+      renderRows(summary.rows, document.getElementById("summaryRows"));
     }
 
     function resetPage() {
@@ -702,8 +755,35 @@ const indexHTML = `<!doctype html>
         lock = false;
         document.getElementById("summary").style.display = "none";
         document.getElementById("card").style.display = "block";
+        setSearchStatus("Session reset. Start anywhere.", "muted");
+        closePartial();
         loadState();
       });
+    }
+
+    async function openPartialSummary() {
+      if (lock) return;
+      lock = true;
+      try {
+        const res = await fetch("/api/summary");
+        const data = await res.json();
+        const pct = data.answered === 0 ? 0 : (data.score / data.answered * 100).toFixed(1);
+        partialScoreLine.innerText = data.answered === 0
+          ? "No answers yet. Ready to start over?"
+          : "Partial score: " + data.score + "/" + data.answered + " (" + pct + "%) so far.";
+        const attemptedRows = (data.rows || []).filter(r => r.userAnswer);
+        const rowsToRender = attemptedRows.length ? attemptedRows : data.rows;
+        renderRows(rowsToRender, partialRows);
+        partialModal.classList.remove("hidden");
+      } catch (e) {
+        setSearchStatus("Could not load partial grade.", "bad");
+        lock = false;
+      }
+    }
+
+    function closePartial() {
+      partialModal.classList.add("hidden");
+      lock = false;
     }
 
     document.getElementById("searchBtn").addEventListener("click", searchAndJump);
@@ -713,6 +793,10 @@ const indexHTML = `<!doctype html>
         searchAndJump();
       }
     });
+    document.getElementById("resetBtn").addEventListener("click", openPartialSummary);
+    document.getElementById("summaryResetBtn").addEventListener("click", openPartialSummary);
+    document.getElementById("readyBtn").addEventListener("click", resetPage);
+    document.getElementById("cancelPartial").addEventListener("click", closePartial);
 
     loadState();
   </script>
