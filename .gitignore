@@ -13,6 +13,7 @@
 
 # Test questions
 questions.json
+all_questions_raw.txt
 
 # Code coverage profiles and other test artifacts
 *.out
