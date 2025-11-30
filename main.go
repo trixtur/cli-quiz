@@ -346,7 +346,6 @@ func printSummary(answered int, questions []question, results []result) {
 		}
 	}
 
-	fmt.Printf("You answered %d of %d correctly (%.1f%%).\n", score, answered, float64(score)*100/float64(answered))
 	fmt.Println("\nReview:")
 	for i := 0; i < answered; i++ {
 		q := questions[i]
@@ -359,6 +358,7 @@ func printSummary(answered int, questions []question, results []result) {
 		fmt.Printf("  Your answer: %c\n", user)
 		fmt.Printf("  Correct answer: %s\n\n", q.Answer)
 	}
+	fmt.Printf("You answered %d of %d correctly (%.1f%%).\n", score, answered, float64(score)*100/float64(answered))
 }
 
 func setupSignalHandling() {
