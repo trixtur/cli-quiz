@@ -282,6 +282,7 @@ const indexHTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Quiz Dashboard</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230f172a'/%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop stop-color='%2322d3ee'/%3E%3Cstop offset='1' stop-color='%23f97316'/%3E%3C/linearGradient%3E%3Cpath fill='url(%23g)' d='M32 10c-11 0-18 7-18 17 0 10 7 17 17 17 4 0 7-1 9-3l5 5c1 1 3 1 4 0 1-1 1-3 0-4l-5-5c2-3 3-6 3-10 0-10-7-17-15-17Zm0 8c5 0 8 3 8 8s-3 9-8 9-9-4-9-9 4-8 9-8Z'/%3E%3C/svg%3E">
   <style>
     :root {
       --bg: radial-gradient(120% 120% at 15% 20%, rgba(0, 195, 255, 0.18), transparent 50%),
