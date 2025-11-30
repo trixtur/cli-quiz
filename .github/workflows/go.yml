@@ -30,8 +30,8 @@ jobs:
             ${{ runner.os }}-go-${{ matrix.go-version }}-
 
       - name: Gofmt check
-        working-directory: quiz-cli
         run: |
+          cd quiz-cli
           fmt_out=$(gofmt -l .)
           if [ -n "$fmt_out" ]; then
             echo "Files need gofmt:"
@@ -40,9 +40,11 @@ jobs:
           fi
 
       - name: Vet
-        working-directory: quiz-cli
-        run: go vet ./...
+        run: |
+          cd quiz-cli
+          go vet ./...
 
       - name: Test
-        working-directory: quiz-cli
-        run: go test ./...
+        run: |
+          cd quiz-cli
+          go test ./...
